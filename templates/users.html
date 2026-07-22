@@ -6,7 +6,8 @@
   {% for user in users %}
     <li>
       <strong>{{ user.username }}</strong><br>
-      소개글: {{ user.bio or '등록된 소개글이 없습니다.' }}
+      소개글: {{ user.bio or '등록된 소개글이 없습니다.' }}<br>
+      <a href="{{ url_for('report', target_type='user', target_id=user.id) }}">이 사용자 신고하기</a>
     </li>
   {% endfor %}
 </ul>

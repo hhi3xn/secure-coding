@@ -10,6 +10,7 @@ app.config['SECRET_KEY'] = 'secret!'
 DATABASE = 'market.db'
 socketio = SocketIO(app)
 chat_rate_limit = {}
+REPORT_LIMIT = 3
 
 def validate_username(username):
     username = (username or '').strip()
@@ -50,6 +51,28 @@ def validate_message(content):
         return None, '메시지는 1자 이상 300자 이하로 입력해야 합니다.'
     return content, None
 
+def validate_report_reason(reason):
+    reason = (reason or '').strip()
+    if len(reason) < 5 or len(reason) > 300:
+        return None, '신고 사유는 5자 이상 300자 이하로 입력해야 합니다.'
+    return reason, None
+
+def apply_report_action(target_type, target_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        "SELECT COUNT(*) AS count FROM report WHERE target_type = ? AND target_id = ?",
+        (target_type, target_id)
+    )
+    report_count = cursor.fetchone()['count']
+    if report_count < REPORT_LIMIT:
+        return
+    if target_type == 'product':
+        cursor.execute("UPDATE product SET status = 'hidden' WHERE id = ?", (target_id,))
+    elif target_type == 'user':
+        cursor.execute("UPDATE user SET status = 'suspended' WHERE id = ?", (target_id,))
+    db.commit()
+
 def add_column_if_missing(cursor, table, column, definition):
     cursor.execute(f"PRAGMA table_info({table})")
     columns = [row['name'] for row in cursor.fetchall()]
@@ -84,6 +107,7 @@ def init_db():
                 bio TEXT
             )
         """)
+        add_column_if_missing(cursor, "user", "status", "TEXT NOT NULL DEFAULT 'active'")
         # 상품 테이블 생성
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS product (
@@ -104,6 +128,12 @@ def init_db():
                 target_id TEXT NOT NULL,
                 reason TEXT NOT NULL
             )
+        """)
+        add_column_if_missing(cursor, "report", "target_type", "TEXT NOT NULL DEFAULT 'product'")
+        add_column_if_missing(cursor, "report", "created_at", "INTEGER NOT NULL DEFAULT 0")
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_report_unique_target
+            ON report (reporter_id, target_type, target_id)
         """)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS message (
@@ -158,6 +188,9 @@ def login():
         cursor = db.cursor()
         cursor.execute("SELECT * FROM user WHERE username = ?", (username,))
         user = cursor.fetchone()
+        if user and user['status'] != 'active':
+            flash('휴면 처리된 계정입니다.')
+            return redirect(url_for('login'))
         if user and check_password_hash(user['password'], password):
             session['user_id'] = user['id']
             flash('로그인 성공!')
@@ -181,7 +214,7 @@ def users():
         return redirect(url_for('login'))
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT id, username, bio FROM user ORDER BY username")
+    cursor.execute("SELECT id, username, bio FROM user WHERE status = 'active' ORDER BY username")
     all_users = cursor.fetchall()
     return render_template('users.html', users=all_users)
 
@@ -207,7 +240,7 @@ def messages():
         db.commit()
         flash('메시지를 보냈습니다.')
         return redirect(url_for('messages'))
-    cursor.execute("SELECT id, username FROM user WHERE id != ? ORDER BY username", (session['user_id'],))
+    cursor.execute("SELECT id, username FROM user WHERE id != ? AND status = 'active' ORDER BY username", (session['user_id'],))
     users = cursor.fetchall()
     cursor.execute("""
         SELECT m.*, sender.username AS sender_name, receiver.username AS receiver_name
@@ -389,19 +422,40 @@ def report():
     if 'user_id' not in session:
         return redirect(url_for('login'))
     if request.method == 'POST':
-        target_id = request.form['target_id']
-        reason = request.form['reason']
+        target_type = request.form.get('target_type', '')
+        target_id = request.form.get('target_id', '').strip()
+        reason, reason_error = validate_report_reason(request.form.get('reason'))
+        if target_type not in ('product', 'user') or reason_error:
+            flash(reason_error or '신고 대상 유형이 올바르지 않습니다.')
+            return redirect(url_for('report'))
         db = get_db()
         cursor = db.cursor()
+        if target_type == 'product':
+            cursor.execute("SELECT id FROM product WHERE id = ? AND status = 'active'", (target_id,))
+        else:
+            cursor.execute("SELECT id FROM user WHERE id = ? AND status = 'active'", (target_id,))
+        if not cursor.fetchone():
+            flash('신고 대상을 찾을 수 없습니다.')
+            return redirect(url_for('report'))
+        if target_type == 'user' and target_id == session['user_id']:
+            flash('자기 자신은 신고할 수 없습니다.')
+            return redirect(url_for('report'))
         report_id = str(uuid.uuid4())
-        cursor.execute(
-            "INSERT INTO report (id, reporter_id, target_id, reason) VALUES (?, ?, ?, ?)",
-            (report_id, session['user_id'], target_id, reason)
-        )
-        db.commit()
+        try:
+            cursor.execute(
+                "INSERT INTO report (id, reporter_id, target_type, target_id, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (report_id, session['user_id'], target_type, target_id, reason, int(time.time()))
+            )
+            db.commit()
+        except sqlite3.IntegrityError:
+            flash('이미 신고한 대상입니다.')
+            return redirect(url_for('report'))
+        apply_report_action(target_type, target_id)
         flash('신고가 접수되었습니다.')
         return redirect(url_for('dashboard'))
-    return render_template('report.html')
+    target_type = request.args.get('target_type', '')
+    target_id = request.args.get('target_id', '')
+    return render_template('report.html', target_type=target_type, target_id=target_id)
 
 # 실시간 채팅: 클라이언트가 메시지를 보내면 전체 브로드캐스트
 @socketio.on('connect')
