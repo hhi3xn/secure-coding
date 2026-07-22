@@ -66,6 +66,12 @@ def validate_amount(amount):
         return None, '송금 금액은 1 이상이어야 합니다.'
     return amount, None
 
+def validate_search_query(query):
+    query = (query or '').strip()
+    if len(query) > 50:
+        return None, '검색어는 50자 이하로 입력해야 합니다.'
+    return query, None
+
 def apply_report_action(target_type, target_id):
     db = get_db()
     cursor = db.cursor()
@@ -326,10 +332,21 @@ def dashboard():
     # 현재 사용자 조회
     cursor.execute("SELECT * FROM user WHERE id = ?", (session['user_id'],))
     current_user = cursor.fetchone()
+    query, query_error = validate_search_query(request.args.get('q'))
+    if query_error:
+        flash(query_error)
+        query = ''
     # 삭제되지 않은 상품 조회
-    cursor.execute("SELECT * FROM product WHERE status = 'active'")
+    if query:
+        like_query = f"%{query}%"
+        cursor.execute(
+            "SELECT * FROM product WHERE status = 'active' AND (title LIKE ? OR description LIKE ?)",
+            (like_query, like_query)
+        )
+    else:
+        cursor.execute("SELECT * FROM product WHERE status = 'active'")
     all_products = cursor.fetchall()
-    return render_template('dashboard.html', products=all_products, user=current_user)
+    return render_template('dashboard.html', products=all_products, user=current_user, query=query)
 
 # 프로필 페이지: bio 업데이트 가능
 @app.route('/profile', methods=['GET', 'POST'])
