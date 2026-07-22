@@ -94,6 +94,20 @@ def add_column_if_missing(cursor, table, column, definition):
     if column not in columns:
         cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
+def get_current_user():
+    if 'user_id' not in session:
+        return None
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM user WHERE id = ?", (session['user_id'],))
+    return cursor.fetchone()
+
+def require_admin():
+    user = get_current_user()
+    if not user or user['role'] != 'admin':
+        abort(403)
+    return user
+
 # 데이터베이스 연결 관리: 요청마다 연결 생성 후 사용, 종료 시 close
 def get_db():
     db = getattr(g, '_database', None)
@@ -124,6 +138,7 @@ def init_db():
         """)
         add_column_if_missing(cursor, "user", "status", "TEXT NOT NULL DEFAULT 'active'")
         add_column_if_missing(cursor, "user", "balance", "INTEGER NOT NULL DEFAULT 10000")
+        add_column_if_missing(cursor, "user", "role", "TEXT NOT NULL DEFAULT 'user'")
         # 상품 테이블 생성
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS product (
@@ -196,8 +211,10 @@ def register():
             flash('이미 존재하는 사용자명입니다.')
             return redirect(url_for('register'))
         user_id = str(uuid.uuid4())
-        cursor.execute("INSERT INTO user (id, username, password) VALUES (?, ?, ?)",
-                       (user_id, username, generate_password_hash(password)))
+        cursor.execute("SELECT id FROM user WHERE role = 'admin'")
+        role = 'admin' if username == 'admin' and cursor.fetchone() is None else 'user'
+        cursor.execute("INSERT INTO user (id, username, password, role) VALUES (?, ?, ?, ?)",
+                       (user_id, username, generate_password_hash(password), role))
         db.commit()
         flash('회원가입이 완료되었습니다. 로그인 해주세요.')
         return redirect(url_for('login'))
@@ -218,6 +235,7 @@ def login():
             return redirect(url_for('login'))
         if user and check_password_hash(user['password'], password):
             session['user_id'] = user['id']
+            session['role'] = user['role']
             flash('로그인 성공!')
             return redirect(url_for('dashboard'))
         else:
@@ -228,7 +246,7 @@ def login():
 # 로그아웃
 @app.route('/logout')
 def logout():
-    session.pop('user_id', None)
+    session.clear()
     flash('로그아웃되었습니다.')
     return redirect(url_for('index'))
 
@@ -321,6 +339,58 @@ def transfer():
     """, (session['user_id'], session['user_id']))
     transfers = cursor.fetchall()
     return render_template('transfer.html', user=current_user, users=users, transfers=transfers)
+
+# 관리자 페이지
+@app.route('/admin')
+def admin():
+    require_admin()
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT id, username, role, status, balance FROM user ORDER BY username")
+    users = cursor.fetchall()
+    cursor.execute("SELECT p.*, u.username AS seller_name FROM product p JOIN user u ON p.seller_id = u.id ORDER BY p.rowid DESC")
+    products = cursor.fetchall()
+    cursor.execute("""
+        SELECT r.*, u.username AS reporter_name
+        FROM report r
+        JOIN user u ON r.reporter_id = u.id
+        ORDER BY r.created_at DESC
+    """)
+    reports = cursor.fetchall()
+    return render_template('admin.html', users=users, products=products, reports=reports)
+
+# 관리자: 유저 상태 변경
+@app.route('/admin/user/<user_id>/<action>', methods=['POST'])
+def admin_user_action(user_id, action):
+    require_admin()
+    if user_id == session['user_id']:
+        flash('자기 자신의 상태는 변경할 수 없습니다.')
+        return redirect(url_for('admin'))
+    if action == 'suspend':
+        get_db().execute("UPDATE user SET status = 'suspended' WHERE id = ?", (user_id,))
+    elif action == 'activate':
+        get_db().execute("UPDATE user SET status = 'active' WHERE id = ?", (user_id,))
+    else:
+        abort(404)
+    get_db().commit()
+    flash('사용자 상태를 변경했습니다.')
+    return redirect(url_for('admin'))
+
+# 관리자: 상품 상태 변경
+@app.route('/admin/product/<product_id>/<action>', methods=['POST'])
+def admin_product_action(product_id, action):
+    require_admin()
+    if action == 'hide':
+        get_db().execute("UPDATE product SET status = 'hidden' WHERE id = ?", (product_id,))
+    elif action == 'restore':
+        get_db().execute("UPDATE product SET status = 'active' WHERE id = ?", (product_id,))
+    elif action == 'delete':
+        get_db().execute("UPDATE product SET status = 'deleted' WHERE id = ?", (product_id,))
+    else:
+        abort(404)
+    get_db().commit()
+    flash('상품 상태를 변경했습니다.')
+    return redirect(url_for('admin'))
 
 # 대시보드: 사용자 정보와 전체 상품 리스트 표시
 @app.route('/dashboard')
