@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}상품 상세보기{% endblock %}
+{% block content %}
+<h2>{{ product.title }}</h2>
+{% if product.image_path %}
+  <p><img src="{{ product.image_path }}" alt="상품 사진" style="max-width: 300px;"></p>
+{% endif %}
+<p>{{ product.description }}</p>
+<p>가격: {{ product.price }}</p>
+<p>판매자: {{ seller.username if seller else '알 수 없음' }}</p>
+{% if session.get('user_id') == product.seller_id %}
+  <p><a href="{{ url_for('edit_product', product_id=product.id) }}">상품 수정</a></p>
+  <form method="post" action="{{ url_for('delete_product', product_id=product.id) }}">
+    <button type="submit">상품 삭제</button>
+  </form>
+{% endif %}
+{% endblock %}

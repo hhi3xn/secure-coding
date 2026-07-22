@@ -1,6 +1,6 @@
 import sqlite3
 import uuid
-from flask import Flask, render_template, request, redirect, url_for, session, flash, g
+from flask import Flask, abort, render_template, request, redirect, url_for, session, flash, g
 from flask_socketio import SocketIO, send
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -23,6 +23,30 @@ def validate_password(password):
     if not any(ch.isalpha() for ch in password) or not any(ch.isdigit() for ch in password):
         return '비밀번호는 영문과 숫자를 모두 포함해야 합니다.'
     return None
+
+def validate_product(title, description, price, image_path):
+    title = (title or '').strip()
+    description = (description or '').strip()
+    image_path = (image_path or '').strip()
+    if len(title) < 1 or len(title) > 80:
+        return None, None, None, None, '상품명은 1자 이상 80자 이하로 입력해야 합니다.'
+    if len(description) < 1 or len(description) > 1000:
+        return None, None, None, None, '상품 설명은 1자 이상 1000자 이하로 입력해야 합니다.'
+    try:
+        price = int(price)
+    except ValueError:
+        return None, None, None, None, '가격은 숫자로 입력해야 합니다.'
+    if price <= 0:
+        return None, None, None, None, '가격은 1원 이상이어야 합니다.'
+    if len(image_path) > 300:
+        return None, None, None, None, '이미지 경로는 300자 이하로 입력해야 합니다.'
+    return title, description, price, image_path, None
+
+def add_column_if_missing(cursor, table, column, definition):
+    cursor.execute(f"PRAGMA table_info({table})")
+    columns = [row['name'] for row in cursor.fetchall()]
+    if column not in columns:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 # 데이터베이스 연결 관리: 요청마다 연결 생성 후 사용, 종료 시 close
 def get_db():
@@ -62,6 +86,8 @@ def init_db():
                 seller_id TEXT NOT NULL
             )
         """)
+        add_column_if_missing(cursor, "product", "image_path", "TEXT")
+        add_column_if_missing(cursor, "product", "status", "TEXT NOT NULL DEFAULT 'active'")
         # 신고 테이블 생성
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS report (
@@ -152,8 +178,8 @@ def dashboard():
     # 현재 사용자 조회
     cursor.execute("SELECT * FROM user WHERE id = ?", (session['user_id'],))
     current_user = cursor.fetchone()
-    # 모든 상품 조회
-    cursor.execute("SELECT * FROM product")
+    # 삭제되지 않은 상품 조회
+    cursor.execute("SELECT * FROM product WHERE status = 'active'")
     all_products = cursor.fetchall()
     return render_template('dashboard.html', products=all_products, user=current_user)
 
@@ -206,15 +232,21 @@ def new_product():
     if 'user_id' not in session:
         return redirect(url_for('login'))
     if request.method == 'POST':
-        title = request.form['title']
-        description = request.form['description']
-        price = request.form['price']
+        title, description, price, image_path, error = validate_product(
+            request.form.get('title'),
+            request.form.get('description'),
+            request.form.get('price'),
+            request.form.get('image_path')
+        )
+        if error:
+            flash(error)
+            return redirect(url_for('new_product'))
         db = get_db()
         cursor = db.cursor()
         product_id = str(uuid.uuid4())
         cursor.execute(
-            "INSERT INTO product (id, title, description, price, seller_id) VALUES (?, ?, ?, ?, ?)",
-            (product_id, title, description, price, session['user_id'])
+            "INSERT INTO product (id, title, description, price, image_path, seller_id, status) VALUES (?, ?, ?, ?, ?, ?, 'active')",
+            (product_id, title, description, str(price), image_path, session['user_id'])
         )
         db.commit()
         flash('상품이 등록되었습니다.')
@@ -226,7 +258,7 @@ def new_product():
 def view_product(product_id):
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT * FROM product WHERE id = ?", (product_id,))
+    cursor.execute("SELECT * FROM product WHERE id = ? AND status = 'active'", (product_id,))
     product = cursor.fetchone()
     if not product:
         flash('상품을 찾을 수 없습니다.')
@@ -235,6 +267,69 @@ def view_product(product_id):
     cursor.execute("SELECT * FROM user WHERE id = ?", (product['seller_id'],))
     seller = cursor.fetchone()
     return render_template('view_product.html', product=product, seller=seller)
+
+# 내가 등록한 상품 관리
+@app.route('/my-products')
+def my_products():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM product WHERE seller_id = ? AND status = 'active'", (session['user_id'],))
+    products = cursor.fetchall()
+    return render_template('my_products.html', products=products)
+
+# 상품 수정
+@app.route('/product/<product_id>/edit', methods=['GET', 'POST'])
+def edit_product(product_id):
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM product WHERE id = ? AND status = 'active'", (product_id,))
+    product = cursor.fetchone()
+    if not product:
+        flash('상품을 찾을 수 없습니다.')
+        return redirect(url_for('dashboard'))
+    if product['seller_id'] != session['user_id']:
+        abort(403)
+    if request.method == 'POST':
+        title, description, price, image_path, error = validate_product(
+            request.form.get('title'),
+            request.form.get('description'),
+            request.form.get('price'),
+            request.form.get('image_path')
+        )
+        if error:
+            flash(error)
+            return redirect(url_for('edit_product', product_id=product_id))
+        cursor.execute(
+            "UPDATE product SET title = ?, description = ?, price = ?, image_path = ? WHERE id = ?",
+            (title, description, str(price), image_path, product_id)
+        )
+        db.commit()
+        flash('상품이 수정되었습니다.')
+        return redirect(url_for('view_product', product_id=product_id))
+    return render_template('edit_product.html', product=product)
+
+# 상품 삭제
+@app.route('/product/<product_id>/delete', methods=['POST'])
+def delete_product(product_id):
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM product WHERE id = ? AND status = 'active'", (product_id,))
+    product = cursor.fetchone()
+    if not product:
+        flash('상품을 찾을 수 없습니다.')
+        return redirect(url_for('dashboard'))
+    if product['seller_id'] != session['user_id']:
+        abort(403)
+    cursor.execute("UPDATE product SET status = 'deleted' WHERE id = ?", (product_id,))
+    db.commit()
+    flash('상품이 삭제되었습니다.')
+    return redirect(url_for('my_products'))
 
 # 신고하기
 @app.route('/report', methods=['GET', 'POST'])
