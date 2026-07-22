@@ -57,6 +57,15 @@ def validate_report_reason(reason):
         return None, '신고 사유는 5자 이상 300자 이하로 입력해야 합니다.'
     return reason, None
 
+def validate_amount(amount):
+    try:
+        amount = int(amount)
+    except ValueError:
+        return None, '송금 금액은 숫자로 입력해야 합니다.'
+    if amount <= 0:
+        return None, '송금 금액은 1 이상이어야 합니다.'
+    return amount, None
+
 def apply_report_action(target_type, target_id):
     db = get_db()
     cursor = db.cursor()
@@ -108,6 +117,7 @@ def init_db():
             )
         """)
         add_column_if_missing(cursor, "user", "status", "TEXT NOT NULL DEFAULT 'active'")
+        add_column_if_missing(cursor, "user", "balance", "INTEGER NOT NULL DEFAULT 10000")
         # 상품 테이블 생성
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS product (
@@ -141,6 +151,15 @@ def init_db():
                 sender_id TEXT NOT NULL,
                 receiver_id TEXT NOT NULL,
                 content TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transfer (
+                id TEXT PRIMARY KEY,
+                sender_id TEXT NOT NULL,
+                receiver_id TEXT NOT NULL,
+                amount INTEGER NOT NULL,
                 created_at INTEGER NOT NULL
             )
         """)
@@ -252,6 +271,50 @@ def messages():
     """, (session['user_id'], session['user_id']))
     all_messages = cursor.fetchall()
     return render_template('messages.html', users=users, messages=all_messages)
+
+# 가상 포인트 송금
+@app.route('/transfer', methods=['GET', 'POST'])
+def transfer():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    db = get_db()
+    cursor = db.cursor()
+    if request.method == 'POST':
+        receiver_id = request.form.get('receiver_id', '')
+        amount, amount_error = validate_amount(request.form.get('amount'))
+        cursor.execute("SELECT * FROM user WHERE id = ?", (session['user_id'],))
+        sender = cursor.fetchone()
+        cursor.execute("SELECT * FROM user WHERE id = ? AND status = 'active'", (receiver_id,))
+        receiver = cursor.fetchone()
+        if amount_error or not receiver or receiver_id == session['user_id']:
+            flash(amount_error or '받는 사용자가 올바르지 않습니다.')
+            return redirect(url_for('transfer'))
+        if sender['balance'] < amount:
+            flash('잔액이 부족합니다.')
+            return redirect(url_for('transfer'))
+        cursor.execute("UPDATE user SET balance = balance - ? WHERE id = ?", (amount, session['user_id']))
+        cursor.execute("UPDATE user SET balance = balance + ? WHERE id = ?", (amount, receiver_id))
+        cursor.execute(
+            "INSERT INTO transfer (id, sender_id, receiver_id, amount, created_at) VALUES (?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), session['user_id'], receiver_id, amount, int(time.time()))
+        )
+        db.commit()
+        flash('송금이 완료되었습니다.')
+        return redirect(url_for('transfer'))
+    cursor.execute("SELECT * FROM user WHERE id = ?", (session['user_id'],))
+    current_user = cursor.fetchone()
+    cursor.execute("SELECT id, username FROM user WHERE id != ? AND status = 'active' ORDER BY username", (session['user_id'],))
+    users = cursor.fetchall()
+    cursor.execute("""
+        SELECT t.*, sender.username AS sender_name, receiver.username AS receiver_name
+        FROM transfer t
+        JOIN user sender ON t.sender_id = sender.id
+        JOIN user receiver ON t.receiver_id = receiver.id
+        WHERE t.sender_id = ? OR t.receiver_id = ?
+        ORDER BY t.created_at DESC
+    """, (session['user_id'], session['user_id']))
+    transfers = cursor.fetchall()
+    return render_template('transfer.html', user=current_user, users=users, transfers=transfers)
 
 # 대시보드: 사용자 정보와 전체 상품 리스트 표시
 @app.route('/dashboard')

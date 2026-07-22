@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}송금{% endblock %}
+{% block content %}
+<h2>송금</h2>
+<p>현재 잔액: {{ user.balance }}</p>
+<form method="post">
+  받는 사용자:
+  <select name="receiver_id" required>
+    {% for user in users %}
+      <option value="{{ user.id }}">{{ user.username }}</option>
+    {% endfor %}
+  </select><br>
+  송금 금액: <input type="number" name="amount" min="1" required><br>
+  <button type="submit">송금하기</button>
+</form>
+
+<h3>송금 내역</h3>
+<ul>
+  {% for transfer in transfers %}
+    <li>
+      {{ transfer.sender_name }} → {{ transfer.receiver_name }} :
+      {{ transfer.amount }}
+    </li>
+  {% else %}
+    <li>송금 내역이 없습니다.</li>
+  {% endfor %}
+</ul>
+{% endblock %}
