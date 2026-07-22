@@ -1,13 +1,15 @@
 import sqlite3
+import time
 import uuid
 from flask import Flask, abort, render_template, request, redirect, url_for, session, flash, g
-from flask_socketio import SocketIO, send
+from flask_socketio import SocketIO, disconnect, send
 from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
 DATABASE = 'market.db'
 socketio = SocketIO(app)
+chat_rate_limit = {}
 
 def validate_username(username):
     username = (username or '').strip()
@@ -41,6 +43,12 @@ def validate_product(title, description, price, image_path):
     if len(image_path) > 300:
         return None, None, None, None, '이미지 경로는 300자 이하로 입력해야 합니다.'
     return title, description, price, image_path, None
+
+def validate_message(content):
+    content = (content or '').strip()
+    if len(content) < 1 or len(content) > 300:
+        return None, '메시지는 1자 이상 300자 이하로 입력해야 합니다.'
+    return content, None
 
 def add_column_if_missing(cursor, table, column, definition):
     cursor.execute(f"PRAGMA table_info({table})")
@@ -95,6 +103,15 @@ def init_db():
                 reporter_id TEXT NOT NULL,
                 target_id TEXT NOT NULL,
                 reason TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS message (
+                id TEXT PRIMARY KEY,
+                sender_id TEXT NOT NULL,
+                receiver_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at INTEGER NOT NULL
             )
         """)
         db.commit()
@@ -167,6 +184,41 @@ def users():
     cursor.execute("SELECT id, username, bio FROM user ORDER BY username")
     all_users = cursor.fetchall()
     return render_template('users.html', users=all_users)
+
+# 1대1 메시지
+@app.route('/messages', methods=['GET', 'POST'])
+def messages():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    db = get_db()
+    cursor = db.cursor()
+    if request.method == 'POST':
+        receiver_id = request.form.get('receiver_id', '')
+        content, error = validate_message(request.form.get('content'))
+        cursor.execute("SELECT id FROM user WHERE id = ?", (receiver_id,))
+        receiver = cursor.fetchone()
+        if error or not receiver or receiver_id == session['user_id']:
+            flash(error or '받는 사용자가 올바르지 않습니다.')
+            return redirect(url_for('messages'))
+        cursor.execute(
+            "INSERT INTO message (id, sender_id, receiver_id, content, created_at) VALUES (?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), session['user_id'], receiver_id, content, int(time.time()))
+        )
+        db.commit()
+        flash('메시지를 보냈습니다.')
+        return redirect(url_for('messages'))
+    cursor.execute("SELECT id, username FROM user WHERE id != ? ORDER BY username", (session['user_id'],))
+    users = cursor.fetchall()
+    cursor.execute("""
+        SELECT m.*, sender.username AS sender_name, receiver.username AS receiver_name
+        FROM message m
+        JOIN user sender ON m.sender_id = sender.id
+        JOIN user receiver ON m.receiver_id = receiver.id
+        WHERE m.sender_id = ? OR m.receiver_id = ?
+        ORDER BY m.created_at DESC
+    """, (session['user_id'], session['user_id']))
+    all_messages = cursor.fetchall()
+    return render_template('messages.html', users=users, messages=all_messages)
 
 # 대시보드: 사용자 정보와 전체 상품 리스트 표시
 @app.route('/dashboard')
@@ -352,10 +404,36 @@ def report():
     return render_template('report.html')
 
 # 실시간 채팅: 클라이언트가 메시지를 보내면 전체 브로드캐스트
+@socketio.on('connect')
+def handle_connect():
+    if 'user_id' not in session:
+        disconnect()
+
 @socketio.on('send_message')
 def handle_send_message_event(data):
-    data['message_id'] = str(uuid.uuid4())
-    send(data, broadcast=True)
+    if 'user_id' not in session:
+        disconnect()
+        return
+    now = time.time()
+    last_sent = chat_rate_limit.get(session['user_id'], 0)
+    if now - last_sent < 1:
+        return
+    message, error = validate_message(data.get('message') if isinstance(data, dict) else '')
+    if error:
+        return
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT username FROM user WHERE id = ?", (session['user_id'],))
+    user = cursor.fetchone()
+    if not user:
+        disconnect()
+        return
+    chat_rate_limit[session['user_id']] = now
+    send({
+        'message_id': str(uuid.uuid4()),
+        'username': user['username'],
+        'message': message
+    }, broadcast=True)
 
 if __name__ == '__main__':
     init_db()  # 앱 컨텍스트 내에서 테이블 생성

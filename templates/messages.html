@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}1:1 메시지{% endblock %}
+{% block content %}
+<h2>1:1 메시지</h2>
+<form method="post">
+  받는 사용자:
+  <select name="receiver_id" required>
+    {% for user in users %}
+      <option value="{{ user.id }}">{{ user.username }}</option>
+    {% endfor %}
+  </select><br>
+  메시지:
+  <textarea name="content" rows="4" cols="50" required></textarea><br>
+  <button type="submit">보내기</button>
+</form>
+
+<h3>메시지 목록</h3>
+<ul>
+  {% for message in messages %}
+    <li>
+      <strong>{{ message.sender_name }}</strong> → <strong>{{ message.receiver_name }}</strong><br>
+      {{ message.content }}
+    </li>
+  {% else %}
+    <li>메시지가 없습니다.</li>
+  {% endfor %}
+</ul>
+{% endblock %}
