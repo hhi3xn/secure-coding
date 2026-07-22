@@ -3,6 +3,7 @@
 {% block content %}
 <h2>1:1 메시지</h2>
 <form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   받는 사용자:
   <select name="receiver_id" required>
     {% for user in users %}

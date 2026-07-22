@@ -4,6 +4,7 @@
 <h2>송금</h2>
 <p>현재 잔액: {{ user.balance }}</p>
 <form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   받는 사용자:
   <select name="receiver_id" required>
     {% for user in users %}

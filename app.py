@@ -1,3 +1,5 @@
+import os
+import secrets
 import sqlite3
 import time
 import uuid
@@ -6,10 +8,14 @@ from flask_socketio import SocketIO, disconnect, send
 from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'secret!'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-change-me')
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('FLASK_ENV') == 'production'
 DATABASE = 'market.db'
 socketio = SocketIO(app)
 chat_rate_limit = {}
+login_failures = {}
 REPORT_LIMIT = 3
 
 def validate_username(username):
@@ -107,6 +113,38 @@ def require_admin():
     if not user or user['role'] != 'admin':
         abort(403)
     return user
+
+def get_csrf_token():
+    token = session.get('csrf_token')
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session['csrf_token'] = token
+    return token
+
+@app.context_processor
+def inject_csrf_token():
+    return dict(csrf_token=get_csrf_token)
+
+@app.before_request
+def protect_post_requests():
+    if request.method == 'POST':
+        token = request.form.get('csrf_token')
+        if not token or token != session.get('csrf_token'):
+            abort(400)
+
+@app.after_request
+def set_security_headers(response):
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "script-src 'self' https://cdnjs.cloudflare.com 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' https: data:; "
+        "connect-src 'self' ws: wss:"
+    )
+    return response
 
 # 데이터베이스 연결 관리: 요청마다 연결 생성 후 사용, 종료 시 close
 def get_db():
@@ -226,6 +264,10 @@ def login():
     if request.method == 'POST':
         username = request.form['username'].strip()
         password = request.form['password']
+        failure = login_failures.get(username)
+        if failure and failure['count'] >= 5 and time.time() - failure['last'] < 60:
+            flash('로그인 실패가 많습니다. 잠시 후 다시 시도해주세요.')
+            return redirect(url_for('login'))
         db = get_db()
         cursor = db.cursor()
         cursor.execute("SELECT * FROM user WHERE username = ?", (username,))
@@ -234,11 +276,16 @@ def login():
             flash('휴면 처리된 계정입니다.')
             return redirect(url_for('login'))
         if user and check_password_hash(user['password'], password):
+            login_failures.pop(username, None)
             session['user_id'] = user['id']
             session['role'] = user['role']
             flash('로그인 성공!')
             return redirect(url_for('dashboard'))
         else:
+            failure = login_failures.get(username, {'count': 0, 'last': 0})
+            failure['count'] += 1
+            failure['last'] = time.time()
+            login_failures[username] = failure
             flash('아이디 또는 비밀번호가 올바르지 않습니다.')
             return redirect(url_for('login'))
     return render_template('login.html')

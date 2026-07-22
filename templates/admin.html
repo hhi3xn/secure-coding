@@ -10,10 +10,12 @@
       {{ user.username }} / 권한: {{ user.role }} / 상태: {{ user.status }} / 잔액: {{ user.balance }}
       {% if user.status == 'active' %}
         <form method="post" action="{{ url_for('admin_user_action', user_id=user.id, action='suspend') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit">휴면 처리</button>
         </form>
       {% else %}
         <form method="post" action="{{ url_for('admin_user_action', user_id=user.id, action='activate') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit">복구</button>
         </form>
       {% endif %}
@@ -27,12 +29,15 @@
     <li>
       {{ product.title }} / 판매자: {{ product.seller_name }} / 상태: {{ product.status }}
       <form method="post" action="{{ url_for('admin_product_action', product_id=product.id, action='hide') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit">숨김</button>
       </form>
       <form method="post" action="{{ url_for('admin_product_action', product_id=product.id, action='restore') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit">복구</button>
       </form>
       <form method="post" action="{{ url_for('admin_product_action', product_id=product.id, action='delete') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit">삭제</button>
       </form>
     </li>
