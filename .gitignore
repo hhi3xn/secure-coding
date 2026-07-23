@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+
+market.db
+*.sqlite
+*.sqlite3
+
+.env
+.venv/
+venv/
+
+.codex/
+.agents/
