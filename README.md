@@ -18,7 +18,7 @@ git clone https://github.com/hhi3xn/secure-coding.git
 cd secure-coding
 python -m venv .venv
 source .venv/bin/activate
-pip install flask flask-socketio
+pip install -r requirements.txt
 ```
 
 Windows PowerShell에서는 가상환경 활성화 명령어가 다릅니다.
