@@ -27,6 +27,20 @@ Windows PowerShell에서는 가상환경 활성화 명령어가 다릅니다.
 .\.venv\Scripts\Activate.ps1
 ```
 
+PowerShell 실행 정책 때문에 `Activate.ps1` 실행이 막히는 경우에는 현재 터미널에서만 실행 정책을 임시로 우회한 뒤 활성화합니다.
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+```
+
+또는 가상환경을 활성화하지 않고 아래처럼 직접 실행할 수 있습니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe app.py
+```
+
 ## 실행 방법
 
 ```bash
